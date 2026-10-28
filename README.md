@@ -2,8 +2,6 @@
 
 Petite app macOS qui fait neiger sur le bureau. La neige se pose sur les fenêtres, le Dock, les dossiers et les widgets, tombe en mottes quand on bouge une fenêtre, et des stalactites poussent sous les fenêtres immobiles. De temps en temps, un bonhomme de neige se construit sur le Dock, salue, lance des boules de neige, puis fond.
 
-Projet d'apprentissage en Swift et AppKit, inspiré de [Snowfall](https://snowfallmac.com). Tout le code est écrit à la main, sans reprise de l'app d'origine.
-
 ## Construire et installer
 
 Il faut macOS 14 ou plus récent et les outils de ligne de commande d'Xcode (`xcode-select --install`).
