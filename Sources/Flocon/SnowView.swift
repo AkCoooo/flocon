@@ -33,9 +33,7 @@ private struct Ledge {
 }
 
 final class SnowView: NSView {
-    var flakesPerSecond: Double = 150 {
-        didSet { updateBackdrop() }
-    }
+    var flakesPerSecond: Double = 150
     /// Multiplie la neige gardée par chaque flocon qui se pose : les tas se forment en quelques secondes.
     var accumulationBoost: CGFloat = 1
     var snowmanEnabled = true {
@@ -48,7 +46,6 @@ final class SnowView: NSView {
     }
     var isPaused = false {
         didSet {
-            updateBackdrop()
             // Sans neige, pas de bonhomme : celui qui est là fond.
             if isPaused { meltSnowman() } else { setFrameRate(Self.activeFPS) }
         }
@@ -103,11 +100,13 @@ final class SnowView: NSView {
     private let clumpContainer = CALayer()
     private let flakeLayers = [CAShapeLayer(), CAShapeLayer(), CAShapeLayer()]
     private let shardLayer = CAShapeLayer()
-    /// Flocons du fond et gros cristaux : ils ne se posent jamais, la carte graphique les anime seule.
-    private let backdrop = CAEmitterLayer()
 
-    /// Plein écran : peu de flocons, un tas fin en bas, rien sur la fenêtre elle-même.
-    private var isFullScreen = false
+    /// Toutes les vitres : dès qu'un écran passe en plein écran, elles s'endorment toutes.
+    private static let all = NSHashTable<SnowView>.weakObjects()
+    /// En veille quand un écran affiche un espace plein écran : plus rien n'est calculé ni affiché nulle part.
+    private var isAsleep = false
+    /// Au réveil, les fenêtres ont pu bouger : on reprend leurs tas sans faire tomber de neige.
+    private var wakingUp = false
     private weak var screen: NSScreen?
 
     override var isFlipped: Bool { true }
@@ -142,7 +141,7 @@ final class SnowView: NSView {
             flakeLayer.lineCap = .round
         }
         configure(shardLayer, fill: NSColor.white.cgColor, in: root)
-        configureBackdrop(in: root)
+        Self.all.add(self)
 
         floor = Pile(minX: 0, width: bounds.width, maxHeight: 30)
         refreshSurfaces()
@@ -158,6 +157,7 @@ final class SnowView: NSView {
     }
 
     func stop() {
+        Self.all.remove(self)
         timer?.invalidate()
         timer = nil
         snowman?.layer.removeFromSuperlayer()
@@ -174,6 +174,16 @@ final class SnowView: NSView {
     }
 
     private func tick() {
+        let asleep = Self.all.allObjects.contains { $0.window?.isOnActiveSpace == false }
+        if asleep != isAsleep {
+            isAsleep = asleep
+            wakingUp = !asleep
+            layer?.isHidden = asleep
+        }
+        guard !isAsleep else {
+            setFrameRate(Self.idleFPS)
+            return
+        }
         let dt = CGFloat(1 / fps)
         tickCount += 1
         if fps == Self.idleFPS || tickCount % 5 == 0 { refreshSurfaces() }
@@ -193,12 +203,19 @@ final class SnowView: NSView {
 
     // MARK: - Chute
 
-    /// Seuls les flocons qui peuvent se poser sont calculés ici ; ceux du fond sont confiés au générateur de particules.
     private func spawn(dt: CGFloat) {
-        spawnBudget += currentRate * Self.landingShare * Double(dt)
+        spawnBudget += currentRate * Double(dt)
         while spawnBudget >= 1 {
             spawnBudget -= 1
-            let near = Double.random(in: 0..<1) < 0.36
+            let roll = Double.random(in: 0..<1)
+            if roll < Self.farShare {
+                guard farCount < Self.maxFarFlakes else { continue }
+                farCount += 1
+                flakes.append(Flake(x: .random(in: 0...bounds.width), y: -5, vx: 0, vy: .random(in: 34...46),
+                                    radius: .random(in: 0.8...1.3), phase: .random(in: 0...(2 * .pi)), depth: 0))
+                continue
+            }
+            let near = roll > 1 - Self.nearShare
             flakes.append(Flake(x: .random(in: 0...bounds.width), y: -5, vx: 0,
                                 vy: near ? .random(in: 60...88) : .random(in: 40...62),
                                 radius: near ? .random(in: 2.2...3.4) : .random(in: 1.3...2.2),
@@ -206,56 +223,15 @@ final class SnowView: NSView {
         }
     }
 
-    /// Part des flocons qui tombent au premier plan et peuvent se poser ; le reste est le fond, sur la carte graphique.
-    private static let landingShare = 0.55
+    /// Flocons du fond : ils ne se posent jamais. Un générateur de particules les animerait sans le processeur,
+    /// mais il force macOS à recomposer tout l'écran à 120 images par seconde.
+    private static let farShare = 0.45
+    private static let nearShare = 0.2
+    private static let maxFarFlakes = 700
+    private var farCount = 0
 
     private var currentRate: Double {
-        isPaused ? 0 : flakesPerSecond * (isFullScreen ? 0.2 : 1)
-    }
-
-    private func configureBackdrop(in root: CALayer) {
-        backdrop.frame = bounds
-        backdrop.emitterShape = .line
-        backdrop.emitterPosition = CGPoint(x: bounds.midX, y: -20)
-        backdrop.emitterSize = CGSize(width: bounds.width, height: 1)
-        let fall = bounds.height + 60
-
-        let far = CAEmitterCell()
-        far.contents = Sprites.softDot
-        far.velocity = 38
-        far.velocityRange = 8
-        far.emissionLongitude = .pi
-        far.emissionRange = 0.12
-        far.lifetime = Float(fall / 30)
-        far.scale = 0.16
-        far.scaleRange = 0.05
-        far.alphaSpeed = 0
-        far.color = NSColor(white: 1, alpha: 0.5).cgColor
-        far.name = "far"
-
-        let crystal = CAEmitterCell()
-        crystal.contents = Sprites.crystal
-        crystal.velocity = 28
-        crystal.velocityRange = 7
-        crystal.emissionLongitude = .pi
-        crystal.emissionRange = 0.15
-        crystal.lifetime = Float(fall / 21)
-        crystal.scale = 0.42
-        crystal.scaleRange = 0.17
-        crystal.spin = 0
-        crystal.spinRange = 1.2
-        crystal.color = NSColor(white: 1, alpha: 0.6).cgColor
-        crystal.name = "crystal"
-
-        backdrop.emitterCells = [far, crystal]
-        root.addSublayer(backdrop)
-        updateBackdrop()
-    }
-
-    /// Le fond suit le menu : quantité de neige, pause et plein écran.
-    func updateBackdrop() {
-        backdrop.setValue(Float(currentRate * 0.3), forKeyPath: "emitterCells.far.birthRate")
-        backdrop.setValue(Float(currentRate / 900), forKeyPath: "emitterCells.crystal.birthRate")
+        isPaused || isAsleep ? 0 : flakesPerSecond
     }
 
     private func moveFlakes(dt: CGFloat) {
@@ -268,7 +244,10 @@ final class SnowView: NSView {
             f.x += (f.vx + sin(f.phase) * (f.depth == 2 ? 24 : 16)) * dt
             f.y += f.vy * dt
             f.vx *= 0.96
-            if land(f, from: previousY) || f.y > bounds.height { continue }
+            if (f.depth > 0 && land(f, from: previousY)) || f.y > bounds.height {
+                if f.depth == 0 { farCount -= 1 }
+                continue
+            }
             kept.append(f)
         }
         flakes = kept
@@ -334,7 +313,8 @@ final class SnowView: NSView {
         // Une fenêtre qui couvre tout l'écran n'a pas de dessus visible : les autres, par-dessus, gardent leur neige.
         let coversScreen = { (window: TrackedWindow) in window.frame.contains(self.bounds.insetBy(dx: 1, dy: 1)) }
         let hasCoveringWindow = onScreen.contains(where: coversScreen)
-        let fullScreen = hasCoveringWindow && FullScreenDetector.isFrontAppFullScreen()
+        let silent = wakingUp
+        wakingUp = false
         var current = onScreen.filter { !coversScreen($0) }
         if !hasCoveringWindow {
             current += (WindowTracker.desktopWidgets() + DesktopIcons.frames())
@@ -343,15 +323,11 @@ final class SnowView: NSView {
         }
         let currentFrames = Dictionary(current.map { ($0.id, $0.frame) }, uniquingKeysWith: { first, _ in first })
 
-        if fullScreen != isFullScreen {
-            isFullScreen = fullScreen
-            updateBackdrop()
-        }
         // La barre du Dock a des coins arrondis à environ 30 % de sa hauteur.
         let bar = dockRect()
         dock = updated(dock, to: bar, maxHeight: 22, cornerRadius: (bar?.height ?? 0) * 0.3)
         // Derrière le Dock, une congère qui monte un peu au-dessus de lui, comme dans Snowfall.
-        let floorHeight = fullScreen ? 8 : dock.map { bounds.height - $0.rect.minY + 14 } ?? 30
+        let floorHeight = dock.map { bounds.height - $0.rect.minY + 14 } ?? 30
         if floor?.maxHeight != floorHeight {
             floor = Pile(minX: 0, width: bounds.width, maxHeight: floorHeight)
             pilesChanged = true
@@ -361,8 +337,7 @@ final class SnowView: NSView {
             let pile = piles.removeValue(forKey: old.id)
             let spikes = icicles.removeValue(forKey: old.id)
             spikes?.layers.forEach { $0.removeFromSuperlayer() }
-            // En passant en plein écran, les tas disparaissent sans pluie de flocons.
-            guard !fullScreen else { continue }
+            guard !silent else { continue }
             if let pile { collapse(pile, top: old.frame.minY) }
             if let spikes { snap(spikes, bottom: old.frame.maxY) }
         }
@@ -386,7 +361,7 @@ final class SnowView: NSView {
     /// Sans autorisation Accessibilité, la largeur du Dock est inconnue : pas de tas plutôt qu'un tas dans le vide.
     /// Le cadre de la liste du Dock est sa barre visible, quelle que soit la taille choisie.
     private func dockRect() -> CGRect? {
-        guard !isFullScreen, let bar = DockLocator.frame().map(toLocal), bar.intersects(bounds) else { return nil }
+        guard let bar = DockLocator.frame().map(toLocal), bar.intersects(bounds) else { return nil }
         // Base enfoncée de 2 points dans la barre : sinon un liseré de vide reste visible sous la neige.
         return CGRect(x: bar.minX, y: bar.minY + 2, width: bar.width, height: bar.height - 2)
     }
@@ -497,7 +472,7 @@ final class SnowView: NSView {
             }
             return
         }
-        guard snowmanEnabled, !isPaused, !isFullScreen, now >= nextSnowmanAt, Self.snowmanOwner == nil else { return }
+        guard snowmanEnabled, !isPaused, !isAsleep, now >= nextSnowmanAt, Self.snowmanOwner == nil else { return }
         buildSnowman()
     }
 
@@ -723,8 +698,8 @@ final class SnowView: NSView {
         }
 
 
-        // Les tas changent lentement : on ne les redécrit que s'ils ont bougé, et au plus 7 fois par seconde.
-        guard pilesChanged, tickCount % 4 == 0 || fps == Self.idleFPS else { return }
+        // Chaque nouveau dessin des tas fait repeindre tout l'écran par macOS : au plus 3 fois par seconde.
+        guard pilesChanged, tickCount % 8 == 0 || fps == Self.idleFPS else { return }
         pilesChanged = false
         let bodyPath = CGMutablePath()
         let topPath = CGMutablePath()

@@ -43,7 +43,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
+    private var screenLayout: [CGRect] = []
+
+    /// macOS prévient aussi quand la barre de menus ou le Dock se cachent (en plein écran, par exemple) :
+    /// on ne recrée les vitres que si un écran a vraiment été branché, débranché ou déplacé.
     @objc private func screensChanged() {
+        let layout = NSScreen.screens.map(\.frame)
+        guard layout != screenLayout else { return }
         snowViews.forEach { $0.stop() }
         overlays.forEach { $0.orderOut(nil) }
         overlays.removeAll()
@@ -52,6 +58,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func createOverlays() {
+        screenLayout = NSScreen.screens.map(\.frame)
         guard let primaryHeight = NSScreen.screens.first?.frame.height else { return }
         for screen in NSScreen.screens {
             createOverlay(on: screen, primaryHeight: primaryHeight)
@@ -66,7 +73,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         window.hasShadow = false
         window.ignoresMouseEvents = true
         window.level = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.overlayWindow)))
-        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenAuxiliary]
+        // Sans .fullScreenAuxiliary : la vitre n'existe pas dans les espaces plein écran, rien n'y est composé.
+        window.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle]
 
         let view = SnowView(frame: CGRect(origin: .zero, size: screen.frame.size))
         window.contentView = view

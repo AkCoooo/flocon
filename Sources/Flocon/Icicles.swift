@@ -1,7 +1,7 @@
 import AppKit
 
 /// Stalactites sous le bord bas d'une fenêtre restée immobile.
-/// Chacune est un petit calque construit une fois à sa taille finale : la carte graphique l'affiche,
+/// Chacune est une petite image peinte une fois à sa taille finale : la carte graphique l'affiche,
 /// et pousser revient à l'étirer vers le bas, sans rien redessiner.
 final class Icicles {
     struct Spike {
@@ -57,12 +57,25 @@ final class Icicles {
 
     /// Glace : blanc givré à la base, bleu translucide au milieu, pointe presque transparente ;
     /// une ombre sur le flanc droit, un reflet blanc à gauche du centre et un fin contour bleuté.
+    /// Peinte une fois dans une image : des calques masqués coûteraient à macOS un passage hors écran par image.
     private static func makeLayer(width w: CGFloat, length h: CGFloat, scale: CGFloat) -> CALayer {
-        let container = CALayer()
-        container.bounds = CGRect(x: 0, y: 0, width: w, height: h)
-        container.anchorPoint = CGPoint(x: 0.5, y: 0)
-        container.actions = ["position": NSNull(), "transform": NSNull(), "hidden": NSNull()]
-        container.isHidden = true
+        let layer = CALayer()
+        layer.bounds = CGRect(x: 0, y: 0, width: w, height: h)
+        layer.anchorPoint = CGPoint(x: 0.5, y: 0)
+        layer.actions = ["position": NSNull(), "transform": NSNull(), "hidden": NSNull()]
+        layer.isHidden = true
+        layer.contentsScale = scale
+        layer.contents = draw(width: w, length: h, scale: scale)
+        return layer
+    }
+
+    private static func draw(width w: CGFloat, length h: CGFloat, scale: CGFloat) -> CGImage? {
+        guard let context = CGContext(data: nil, width: Int(ceil(w * scale)), height: Int(ceil(h * scale)),
+                                      bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
+        // Origine en haut, comme la vitre : la base de la stalactite est en y = 0.
+        context.translateBy(x: 0, y: h * scale)
+        context.scaleBy(x: scale, y: -scale)
 
         let lean = CGFloat.random(in: -1...1)
         let path = CGMutablePath()
@@ -73,58 +86,34 @@ final class Icicles {
                       control1: CGPoint(x: w * 0.58 + lean, y: h * 0.62), control2: CGPoint(x: w * 0.88, y: h * 0.3))
         path.closeSubpath()
 
-        func masked(_ layer: CALayer) -> CALayer {
-            let mask = CAShapeLayer()
-            mask.path = path
-            mask.contentsScale = scale
-            layer.frame = container.bounds
-            layer.mask = mask
-            return layer
+        func gradient(_ colors: [NSColor], _ locations: [CGFloat]) -> CGGradient? {
+            CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(), colors: colors.map(\.cgColor) as CFArray,
+                       locations: locations)
         }
 
-        let body = CAGradientLayer()
-        body.colors = [NSColor(white: 1, alpha: 0.95).cgColor,
-                       NSColor(red: 0.86, green: 0.93, blue: 1, alpha: 0.78).cgColor,
-                       NSColor(red: 0.7, green: 0.84, blue: 1, alpha: 0.42).cgColor,
-                       NSColor(red: 0.75, green: 0.88, blue: 1, alpha: 0.08).cgColor]
-        body.locations = [0, 0.2, 0.6, 1]
-        body.startPoint = CGPoint(x: 0.5, y: 0)
-        body.endPoint = CGPoint(x: 0.5, y: 1)
-        container.addSublayer(masked(body))
+        context.saveGState()
+        context.addPath(path)
+        context.clip()
+        if let body = gradient([NSColor(white: 1, alpha: 0.95),
+                                NSColor(red: 0.86, green: 0.93, blue: 1, alpha: 0.78),
+                                NSColor(red: 0.7, green: 0.84, blue: 1, alpha: 0.42),
+                                NSColor(red: 0.75, green: 0.88, blue: 1, alpha: 0.08)], [0, 0.2, 0.6, 1]) {
+            context.drawLinearGradient(body, start: .zero, end: CGPoint(x: 0, y: h), options: [])
+        }
+        if let side = gradient([NSColor(red: 0.42, green: 0.56, blue: 0.85, alpha: 0),
+                                NSColor(red: 0.42, green: 0.56, blue: 0.85, alpha: 0.4)], [0.5, 1]) {
+            context.drawLinearGradient(side, start: .zero, end: CGPoint(x: w, y: 0), options: [])
+        }
+        context.clip(to: CGRect(x: w * 0.3, y: 0, width: max(1, w * 0.16), height: h * 0.8))
+        if let shine = gradient([NSColor(white: 1, alpha: 0.95), NSColor(white: 1, alpha: 0)], [0, 1]) {
+            context.drawLinearGradient(shine, start: .zero, end: CGPoint(x: 0, y: h * 0.8), options: [])
+        }
+        context.restoreGState()
 
-        let side = CAGradientLayer()
-        side.colors = [NSColor(red: 0.42, green: 0.56, blue: 0.85, alpha: 0).cgColor,
-                       NSColor(red: 0.42, green: 0.56, blue: 0.85, alpha: 0.4).cgColor]
-        side.locations = [0.5, 1]
-        side.startPoint = CGPoint(x: 0, y: 0.5)
-        side.endPoint = CGPoint(x: 1, y: 0.5)
-        container.addSublayer(masked(side))
-
-        let shine = CAGradientLayer()
-        shine.colors = [NSColor(white: 1, alpha: 0.95).cgColor, NSColor(white: 1, alpha: 0).cgColor]
-        shine.startPoint = CGPoint(x: 0.5, y: 0)
-        shine.endPoint = CGPoint(x: 0.5, y: 0.8)
-        shine.frame = container.bounds
-        let narrow = CAShapeLayer()
-        narrow.path = CGPath(rect: CGRect(x: w * 0.3, y: 0, width: max(1, w * 0.16), height: h * 0.8), transform: nil)
-        shine.mask = narrow
-        // Le reflet est découpé deux fois : en bande étroite, puis à la forme de la stalactite.
-        let clip = CALayer()
-        clip.frame = container.bounds
-        let outline = CAShapeLayer()
-        outline.path = path
-        outline.contentsScale = scale
-        clip.mask = outline
-        clip.addSublayer(shine)
-        container.addSublayer(clip)
-
-        let edge = CAShapeLayer()
-        edge.path = path
-        edge.fillColor = nil
-        edge.strokeColor = NSColor(red: 0.6, green: 0.74, blue: 0.95, alpha: 0.5).cgColor
-        edge.lineWidth = 0.6
-        edge.contentsScale = scale
-        container.addSublayer(edge)
-        return container
+        context.addPath(path)
+        context.setStrokeColor(NSColor(red: 0.6, green: 0.74, blue: 0.95, alpha: 0.5).cgColor)
+        context.setLineWidth(0.6)
+        context.strokePath()
+        return context.makeImage()
     }
 }
