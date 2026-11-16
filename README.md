@@ -42,6 +42,10 @@
 - **Il sait se faire oublier.** Dès qu'un écran passe en plein écran, Flocon se met en veille sur tous les écrans et ne calcule plus rien. Les clics traversent la neige, sauf sur le bonhomme : rien ne gêne ton travail.
 
 <p align="center">
+  <img src="docs/fenetre.png" width="480" alt="Fenêtre avec de la neige sur le dessus et des stalactites en dessous">
+</p>
+
+<p align="center">
   <img src="docs/bonhomme.png" width="560" alt="Bonhomme de neige avec écharpe et carotte, debout sur le Dock enneigé">
 </p>
 
