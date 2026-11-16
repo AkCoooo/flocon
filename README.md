@@ -24,6 +24,10 @@
   <a href="#le-menu-">Le menu</a>
 </p>
 
+<p align="center">
+  <img src="docs/bureau.jpg" width="820" alt="Bureau enneigé : flocons, neige sur le Dock et bonhomme de neige">
+</p>
+
 ---
 
 ## Ce qui se passe sur ton bureau
@@ -36,6 +40,14 @@
 - **Un bonhomme de neige** se construit de temps en temps sur le Dock. Il cligne des yeux, regarde autour de lui, salue, sautille, lance des boules de neige, puis fond.
 - **Tu peux le démolir.** Chaque clic fait éclater une boule : celle du bas le fait descendre d'un étage, celle du milieu fait rouler sa tête dans la neige.
 - **Il sait se faire oublier.** Dès qu'un écran passe en plein écran, Flocon se met en veille sur tous les écrans et ne calcule plus rien. Les clics traversent la neige, sauf sur le bonhomme : rien ne gêne ton travail.
+
+<p align="center">
+  <img src="docs/bonhomme.png" width="560" alt="Bonhomme de neige avec écharpe et carotte, debout sur le Dock enneigé">
+</p>
+
+<p align="center">
+  <img src="docs/chasse-neige.png" width="620" alt="Chasse-neige orange qui pousse une congère sur le Dock">
+</p>
 
 ## Installer
 
