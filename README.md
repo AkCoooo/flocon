@@ -29,10 +29,13 @@
 ## Ce qui se passe sur ton bureau
 
 - **La neige tient.** Elle s'accumule sur le haut des fenêtres, sur le Dock, sur les icônes du bureau et sur les widgets, en suivant leurs coins arrondis.
-- **Elle tombe en mottes.** Bouge une fenêtre enneigée : sa neige se détache et dégringole.
+- **Elle tombe en mottes.** Bouge ou ferme une fenêtre enneigée : sa neige se détache, dégringole et se pose sur ce qu'elle rencontre en dessous, une autre fenêtre, une icône ou le Dock.
+- **Tu peux la pousser à la souris.** Garde le bouton enfoncé et traverse la neige : lentement elle s'émiette, de côté elle s'entasse devant le pointeur, d'un coup sec elle s'envole. Glisser une fenêtre ou une icône marche comme avant.
+- **Un chasse-neige passe sur le Dock** de temps en temps, gyrophare allumé. Il pousse une congère devant sa lame et la fait tomber au bout. Le bonhomme sur son chemin se fait renverser.
 - **Des stalactites poussent** sous les fenêtres qu'on laisse tranquilles.
 - **Un bonhomme de neige** se construit de temps en temps sur le Dock. Il cligne des yeux, regarde autour de lui, salue, sautille, lance des boules de neige, puis fond.
-- **Il sait se faire oublier.** Dès qu'un écran passe en plein écran, Flocon se met en veille sur tous les écrans et ne calcule plus rien. Les clics traversent la neige : rien ne gêne ton travail.
+- **Tu peux le démolir.** Chaque clic fait éclater une boule : celle du bas le fait descendre d'un étage, celle du milieu fait rouler sa tête dans la neige.
+- **Il sait se faire oublier.** Dès qu'un écran passe en plein écran, Flocon se met en veille sur tous les écrans et ne calcule plus rien. Les clics traversent la neige, sauf sur le bonhomme : rien ne gêne ton travail.
 
 ## Installer
 
@@ -60,7 +63,7 @@ La neige sur le Dock et les icônes du bureau passe par l'API d'Accessibilité :
 | **Faire neiger** | Lance ou arrête la neige |
 | **Quantité** | Légère, Normale ou Tempête |
 | **Bonhomme de neige** | L'afficher, le laisser lancer des boules de neige, ou en construire un tout de suite |
-| **Réglages** | Neige qui tient vite, ouvrir au démarrage du Mac |
+| **Réglages** | Neige qui tient vite, chasse-neige sur le Dock (ou le faire passer tout de suite), ouvrir au démarrage du Mac |
 
 ## Sous le capot
 
@@ -74,3 +77,4 @@ La neige sur le Dock et les icônes du bureau passe par l'API d'Accessibilité :
 | `Icicles.swift` | Les stalactites |
 | `Clump.swift` | Les mottes qui tombent quand une fenêtre bouge |
 | `Snowman.swift` | Le bonhomme de neige |
+| `Snowplow.swift` | Le chasse-neige du Dock |

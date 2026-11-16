@@ -44,6 +44,7 @@ final class SnowView: NSView {
             snowman?.onThrow = snowballsEnabled ? { [weak self] hand in self?.launchSnowball(from: hand) } : nil
         }
     }
+    var snowplowEnabled = true
     var isPaused = false {
         didSet {
             // Sans neige, pas de bonhomme : celui qui est là fond.
@@ -57,6 +58,8 @@ final class SnowView: NSView {
     private static let shardLifetime: CGFloat = 0.6
     /// Rayon des coins des fenêtres de macOS 26.
     private static let windowCornerRadius: CGFloat = 20
+    /// La neige s'enfonce un peu dans le haut des fenêtres, au lieu d'être posée pile sur leur bord.
+    private static let windowSink: CGFloat = 3
 
     private var flakes: [Flake] = []
     private var clumps: [Clump] = []
@@ -83,6 +86,22 @@ final class SnowView: NSView {
     private var snowmanBuiltAt: TimeInterval = 0
     private var snowmanIdle = false
     private var nextSnowmanAt = ProcessInfo.processInfo.systemUptime + 20
+    /// Le bonhomme a été cassé à coups de clics ou renversé par le chasse-neige : il s'en va peu après.
+    private var snowmanGoneAt: TimeInterval?
+
+    private var plow: Snowplow?
+    private var plowStartX: CGFloat = 0
+    private var plowStartedAt: CFTimeInterval = 0
+    private var plowSpeed: CGFloat = 0
+    private var bladeBefore: CGFloat = 0
+    /// Neige raclée que la lame pousse devant elle, en quantité de colonnes.
+    private var plowLoad: CGFloat = 0
+    private var plowLeaving = false
+    private var nextPlowAt = ProcessInfo.processInfo.systemUptime + .random(in: 90...180)
+
+    /// Pointeur au passage précédent, tant que le bouton est enfoncé.
+    private var lastMouse: CGPoint?
+    private var capturesClicks = false
     private var spawnBudget: Double = 0
     private var tickCount = 0
     private var pilesChanged = true
@@ -93,6 +112,11 @@ final class SnowView: NSView {
     private let pileShadowLayer = CAShapeLayer()
     private let pileBodyLayer = CAShapeLayer()
     private let pileTopLayer = CAShapeLayer()
+    /// La neige du Dock a ses propres calques : pendant le passage du chasse-neige, elle est redessinée à chaque
+    /// image sans toucher au reste de l'écran.
+    private let dockShadowLayer = CAShapeLayer()
+    private let dockBodyLayer = CAShapeLayer()
+    private let dockTopLayer = CAShapeLayer()
     /// Stalactites : glace bleue translucide autour d'un cœur blanc.
     private let iceContainer = CALayer()
     /// Liseré de givre le long du bord des fenêtres, là où pendent les stalactites.
@@ -126,6 +150,9 @@ final class SnowView: NSView {
         configure(pileShadowLayer, fill: NSColor(red: 0.1, green: 0.15, blue: 0.3, alpha: 0.22).cgColor, offsetY: 2, in: root)
         configure(pileBodyLayer, fill: NSColor(red: 0.8, green: 0.86, blue: 0.96, alpha: 1).cgColor, in: root)
         configure(pileTopLayer, fill: NSColor.white.cgColor, in: root)
+        configure(dockShadowLayer, fill: pileShadowLayer.fillColor, offsetY: 2, in: root)
+        configure(dockBodyLayer, fill: pileBodyLayer.fillColor, in: root)
+        configure(dockTopLayer, fill: NSColor.white.cgColor, in: root)
         iceContainer.frame = bounds
         root.addSublayer(iceContainer)
         configure(frostLayer, fill: NSColor(white: 1, alpha: 0.92).cgColor, in: root)
@@ -162,6 +189,8 @@ final class SnowView: NSView {
         timer = nil
         snowman?.layer.removeFromSuperlayer()
         clearSnowman(nextIn: 20)
+        plow?.layer.removeFromSuperlayer()
+        plow = nil
     }
 
     private func setFrameRate(_ newFPS: Double) {
@@ -191,13 +220,17 @@ final class SnowView: NSView {
             growIcicles(seconds: CGFloat(30 / fps))
             updateSnowman()
         }
+        let mouse = mouseLocation()
+        captureClicksOverSnowman(mouse)
+        pushSnow(with: mouse, dt: dt)
+        movePlow(dt: dt)
         if !isPaused { spawn(dt: dt) }
         moveFlakes(dt: dt)
         moveClumps(dt: dt)
         moveShards(dt: dt)
         render()
         // Neige arrêtée et plus rien en l'air : on ne fait plus que surveiller les fenêtres.
-        let idle = isPaused && flakes.isEmpty && clumps.isEmpty && shards.isEmpty
+        let idle = isPaused && flakes.isEmpty && clumps.isEmpty && shards.isEmpty && plow == nil && lastMouse == nil
         setFrameRate(idle ? Self.idleFPS : Self.activeFPS)
     }
 
@@ -263,7 +296,7 @@ final class SnowView: NSView {
         }
         for (index, surface) in surfaces.enumerated() {
             guard let pile = surfacePiles[index], pile.contains(x: f.x), pile.canHold(atX: f.x) else { continue }
-            let top = surface.frame.minY + pile.surfaceOffset(atX: f.x)
+            let top = surfaceTop(surface) + pile.surfaceOffset(atX: f.x)
             if previousY < top, f.y >= top, !isCovered(CGPoint(x: f.x, y: top), byWindowsBefore: index) {
                 return deposit(f, on: pile, amount: 1.1)
             }
@@ -302,6 +335,10 @@ final class SnowView: NSView {
 
     // MARK: - Surfaces
 
+    private func surfaceTop(_ surface: TrackedWindow) -> CGFloat {
+        surface.frame.minY + (Self.isDesktopIcon(surface.id) ? 0 : Self.windowSink)
+    }
+
     private func toLocal(_ rect: CGRect) -> CGRect {
         rect.offsetBy(dx: -screenOrigin.x, dy: -screenOrigin.y)
     }
@@ -338,7 +375,7 @@ final class SnowView: NSView {
             let spikes = icicles.removeValue(forKey: old.id)
             spikes?.layers.forEach { $0.removeFromSuperlayer() }
             guard !silent else { continue }
-            if let pile { collapse(pile, top: old.frame.minY) }
+            if let pile { collapse(pile, top: surfaceTop(old)) }
             if let spikes { snap(spikes, bottom: old.frame.maxY) }
         }
         for surface in current where piles[surface.id] == nil {
@@ -362,8 +399,10 @@ final class SnowView: NSView {
     /// Le cadre de la liste du Dock est sa barre visible, quelle que soit la taille choisie.
     private func dockRect() -> CGRect? {
         guard let bar = DockLocator.frame().map(toLocal), bar.intersects(bounds) else { return nil }
-        // Base enfoncée de 2 points dans la barre : sinon un liseré de vide reste visible sous la neige.
-        return CGRect(x: bar.minX, y: bar.minY + 2, width: bar.width, height: bar.height - 2)
+        // Le cadre du Dock commence un peu au-dessus de sa barre visible, d'autant plus que le Dock est grand :
+        // sans enfoncer la base, un liseré vide reste sous la neige.
+        let sink = (bar.height * 0.07).rounded()
+        return CGRect(x: bar.minX, y: bar.minY + sink, width: bar.width, height: bar.height - sink)
     }
 
     /// Le bord a bougé ou disparu : sa neige retombe et un nouveau tas commence.
@@ -407,9 +446,22 @@ final class SnowView: NSView {
         }
     }
 
-    private func groundLevel(atX x: CGFloat) -> CGFloat {
-        if let rect = dock?.rect, rect.minX...rect.maxX ~= x { return rect.minY }
-        return bounds.height
+    /// Premier dessus de neige sous le point, qu'aucune fenêtre ne cache : une fenêtre, une icône, un widget,
+    /// le Dock, sinon le bas de l'écran. Ce qui tombe s'arrête là, comme les flocons.
+    private func ground(below point: CGPoint) -> (y: CGFloat, pile: Pile?) {
+        var best: (y: CGFloat, pile: Pile?) = (bounds.height + (floor?.surfaceOffset(atX: point.x) ?? 0), floor)
+        if let dock, dock.pile.contains(x: point.x) {
+            let top = dock.rect.minY + dock.pile.surfaceOffset(atX: point.x)
+            if top >= point.y, top < best.y { best = (top, dock.pile) }
+        }
+        for (index, surface) in surfaces.enumerated() {
+            guard let pile = surfacePiles[index], pile.contains(x: point.x) else { continue }
+            let top = surfaceTop(surface) + pile.surfaceOffset(atX: point.x)
+            guard top >= point.y, top < best.y, !isCovered(CGPoint(x: point.x, y: top), byWindowsBefore: index)
+            else { continue }
+            best = (top, pile)
+        }
+        return best
     }
 
     private func moveClumps(dt: CGFloat) {
@@ -418,10 +470,12 @@ final class SnowView: NSView {
         CATransaction.setDisableActions(true)
         clumps = clumps.filter { clump in
             let wasFalling = clump.landedFor == nil
-            let alive = clump.step(dt: dt, gravity: Self.gravity, ground: groundLevel(atX: clump.position.x))
+            let bottom = CGPoint(x: clump.position.x, y: clump.position.y + clump.layer.bounds.height / 2 - 1)
+            let below = ground(below: bottom)
+            let alive = clump.step(dt: dt, gravity: Self.gravity, ground: below.y)
             if wasFalling, clump.landedFor != nil {
                 splat(clump)
-                bury(clump)
+                bury(clump, in: below.pile)
             }
             if !alive { clump.layer.removeFromSuperlayer() }
             return alive
@@ -430,14 +484,12 @@ final class SnowView: NSView {
     }
 
     /// La motte rejoint le tas où elle tombe ; le tas garde sa hauteur maximale, le surplus disparaît.
-    private func bury(_ clump: Clump) {
+    private func bury(_ clump: Clump, in pile: Pile?) {
         let size = clump.layer.bounds.size
-        let pile: Pile?
-        if let dock, dock.rect.minX...dock.rect.maxX ~= clump.position.x { pile = dock.pile } else { pile = floor }
         guard let pile else { return }
         var x = clump.position.x - size.width / 2
         while x < clump.position.x + size.width / 2 {
-            pile.add(atX: x, amount: size.height * 0.5)
+            if pile.contains(x: x) { pile.add(atX: x, amount: size.height * 0.5) }
             x += Pile.binWidth
         }
         pilesChanged = true
@@ -449,6 +501,17 @@ final class SnowView: NSView {
     private func updateSnowman() {
         let now = ProcessInfo.processInfo.systemUptime
         if let snowman {
+            if let goneAt = snowmanGoneAt {
+                if now >= goneAt {
+                    snowman.layer.removeFromSuperlayer()
+                    clearSnowman(nextIn: .random(in: 60...150))
+                }
+                return
+            }
+            if snowman.isHit, now >= snowmanMeltsAt {
+                snowmanGoneAt = now
+                return
+            }
             // Le Dock a bougé ou disparu : le bonhomme n'a plus de sol, il s'en va.
             guard let dock, snowmanDock == dock.rect else {
                 snowman.layer.removeFromSuperlayer()
@@ -458,10 +521,10 @@ final class SnowView: NSView {
             if now >= snowmanMeltsAt + Snowman.meltDuration {
                 snowman.layer.removeFromSuperlayer()
                 clearSnowman(nextIn: .random(in: 90...240))
-            } else if now >= snowmanMeltsAt, !snowmanMelting {
+            } else if now >= snowmanMeltsAt, !snowmanMelting, !snowman.isHit {
                 snowmanMelting = true
                 snowman.melt()
-            } else if now < snowmanMeltsAt, now >= snowmanBuiltAt {
+            } else if now < snowmanMeltsAt, now >= snowmanBuiltAt, !snowman.isHit {
                 if !snowmanIdle {
                     snowmanIdle = true
                     snowman.startIdle()
@@ -630,6 +693,7 @@ final class SnowView: NSView {
 
     private func clearSnowman(nextIn delay: TimeInterval) {
         snowman = nil
+        snowmanGoneAt = nil
         snowmanMelting = false
         snowmanIdle = false
         snowmanDock = nil
@@ -659,7 +723,7 @@ final class SnowView: NSView {
             guard s.life > 0 else { return nil }
             s.vy += Self.gravity * 0.6 * dt
             s.x += s.vx * dt
-            s.y = min(s.y + s.vy * dt, groundLevel(atX: s.x))
+            s.y = min(s.y + s.vy * dt, ground(below: CGPoint(x: s.x, y: s.y)).y)
             return s
         }
     }
@@ -672,6 +736,223 @@ final class SnowView: NSView {
                                     vx: .random(in: -30...30), vy: .random(in: 0...80),
                                     radius: .random(in: 1...2), life: Self.shardLifetime * 1.5))
             }
+        }
+    }
+
+    // MARK: - Souris
+
+    /// Pointeur dans le repère de cet écran, ou nil s'il est sur un autre.
+    private func mouseLocation() -> CGPoint? {
+        guard let frame = screen?.frame else { return nil }
+        let m = NSEvent.mouseLocation
+        guard frame.contains(m) else { return nil }
+        return CGPoint(x: m.x - frame.minX, y: frame.maxY - m.y)
+    }
+
+    /// Les clics traversent la vitre, sauf au-dessus du bonhomme : là, la vitre les prend pour lui.
+    private func captureClicksOverSnowman(_ mouse: CGPoint?) {
+        let built = ProcessInfo.processInfo.systemUptime >= snowmanBuiltAt
+        let over = mouse.flatMap { point in snowman.map { built && snowmanGoneAt == nil && $0.ball(at: point) != nil } }
+            ?? false
+        guard over != capturesClicks else { return }
+        capturesClicks = over
+        window?.ignoresMouseEvents = !over
+    }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { capturesClicks ? self : nil }
+
+    /// Une boule éclate à chaque clic ; quand il n'en reste plus, le bonhomme s'en va.
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let snowman, snowmanGoneAt == nil, let index = snowman.ball(at: point) else { return }
+        let center = snowman.hit(index)
+        splatSnowball(at: center)
+        burstShards(at: center, count: 16, speed: 220)
+        if snowman.isWrecked { snowmanGoneAt = ProcessInfo.processInfo.systemUptime + 1.6 }
+    }
+
+    /// Bouton enfoncé, le pointeur traverse la neige : lentement elle s'émiette, de côté elle s'entasse devant lui,
+    /// d'un coup sec elle s'envole. Glisser une fenêtre ou une icône marche comme avant.
+    private func pushSnow(with mouse: CGPoint?, dt: CGFloat) {
+        guard NSEvent.pressedMouseButtons & 1 != 0, let mouse else {
+            lastMouse = nil
+            return
+        }
+        defer { lastMouse = mouse }
+        guard let last = lastMouse else { return }
+        let dx = mouse.x - last.x, dy = mouse.y - last.y
+        let distance = hypot(dx, dy)
+        guard distance > 0.5 else { return }
+        let speed = distance / dt
+        let steps = max(1, Int(distance / 3))
+        for step in 1...steps {
+            let t = CGFloat(step) / CGFloat(steps)
+            let point = CGPoint(x: last.x + dx * t, y: last.y + dy * t)
+            guard let pile = pile(under: point) else { continue }
+            if speed > 1400 {
+                let removed = pile.scoop(atX: point.x, radius: 3)
+                fling(removed, from: point, velocity: CGVector(dx: dx / dt * 0.5, dy: min(dy / dt * 0.5, -200)))
+            } else if abs(dx) > abs(dy), speed > 250 {
+                let direction = dx > 0 ? 1 : -1
+                let removed = pile.scoop(atX: point.x, radius: 1)
+                pile.bank(atX: point.x + CGFloat(direction) * Pile.binWidth * 3, amount: removed, direction: direction)
+            } else {
+                let removed = pile.scoop(atX: point.x, radius: 1, fraction: 0.35)
+                crumble(removed, at: point)
+            }
+            pilesChanged = true
+        }
+    }
+
+    /// Tas dont la neige est sous le point, et qu'aucune fenêtre ne cache.
+    private func pile(under point: CGPoint) -> Pile? {
+        func inSnow(_ pile: Pile, top: CGFloat) -> Bool {
+            guard pile.contains(x: point.x), pile.height(atX: point.x) > 1 else { return false }
+            let i = pile.index(atX: point.x)
+            return point.y >= top + pile.surfaceOffset(atX: point.x) - 4 && point.y <= top + pile.drop(i) + 2
+        }
+        if let dock, inSnow(dock.pile, top: dock.rect.minY) { return dock.pile }
+        for (index, surface) in surfaces.enumerated() {
+            guard let pile = surfacePiles[index], inSnow(pile, top: surfaceTop(surface)),
+                  !isCovered(point, byWindowsBefore: index) else { continue }
+            return pile
+        }
+        if let floor, inSnow(floor, top: bounds.height), !isCovered(point, byWindowsBefore: surfaces.count),
+           !isBehindDock(point) {
+            return floor
+        }
+        return nil
+    }
+
+    private func crumble(_ amount: CGFloat, at point: CGPoint) {
+        for _ in 0..<min(6, Int(amount / 2)) {
+            shards.append(Shard(x: point.x + .random(in: -4...4), y: point.y, vx: .random(in: -25...25),
+                                vy: .random(in: -40...20), radius: .random(in: 1...1.8), life: Self.shardLifetime))
+        }
+    }
+
+    private func fling(_ amount: CGFloat, from point: CGPoint, velocity: CGVector) {
+        for _ in 0..<min(20, Int(amount / 1.5)) {
+            shards.append(Shard(x: point.x, y: point.y,
+                                vx: velocity.dx * .random(in: 0.6...1.2) + .random(in: -60...60),
+                                vy: velocity.dy * .random(in: 0.6...1.2) + .random(in: -80...0),
+                                radius: .random(in: 1.3...2.8), life: Self.shardLifetime * .random(in: 1...1.6)))
+        }
+    }
+
+    private func burstShards(at point: CGPoint, count: Int, speed: CGFloat) {
+        for _ in 0..<count {
+            let angle = CGFloat.random(in: 0...(2 * .pi))
+            let v = CGFloat.random(in: 0.4...1) * speed
+            shards.append(Shard(x: point.x, y: point.y, vx: cos(angle) * v, vy: sin(angle) * v - 120,
+                                radius: .random(in: 1.5...3), life: Self.shardLifetime * 1.3))
+        }
+    }
+
+    // MARK: - Chasse-neige
+
+    /// Il passe de temps en temps sur le Dock enneigé, ou tout de suite depuis le menu.
+    func sendPlowNow() {
+        startPlow()
+    }
+
+    private func startPlow() {
+        guard plow == nil, let dock, !isPaused else { return }
+        let size = min(1.3, max(0.7, dock.rect.height / 86))
+        let truck = Snowplow(size: size, contentsScale: screen?.backingScaleFactor ?? 2)
+        plowStartX = dock.rect.minX - truck.size.width * 0.6
+        let endX = dock.rect.maxX + 40 - truck.bladeOffset
+        plowSpeed = 120 * size
+        plowStartedAt = CACurrentMediaTime()
+        bladeBefore = plowStartX + truck.bladeOffset
+        plowLoad = 0
+        plowLeaving = false
+
+        // Core Animation fait rouler le camion à la fréquence de l'écran ; le moteur ne fait que suivre sa lame.
+        let duration = Double((endX - plowStartX) / plowSpeed)
+        let drive = CABasicAnimation(keyPath: "position.x")
+        drive.fromValue = plowStartX
+        drive.toValue = endX
+        drive.duration = duration
+        drive.timingFunction = CAMediaTimingFunction(name: .linear)
+        let fade = CAKeyframeAnimation(keyPath: "opacity")
+        let fadeIn = Double(truck.size.width * 0.6 + 30) / Double(plowSpeed) / duration
+        let fadeOut = 1 - 40 / Double(plowSpeed) / duration
+        fade.values = [0, 1, 1, 0]
+        fade.keyTimes = [0, NSNumber(value: min(fadeIn, 0.3)), NSNumber(value: max(fadeOut, 0.7)), 1]
+        fade.duration = duration
+        for animation in [drive, fade] as [CAAnimation] {
+            animation.beginTime = plowStartedAt
+            animation.fillMode = .forwards
+            animation.isRemovedOnCompletion = false
+        }
+        truck.layer.position = CGPoint(x: plowStartX, y: dock.rect.minY + 1)
+        truck.layer.opacity = 0
+        truck.layer.add(drive, forKey: "drive")
+        truck.layer.add(fade, forKey: "fade")
+        clumpContainer.addSublayer(truck.layer)
+        plow = truck
+    }
+
+    /// La lame racle le Dock et pousse la congère accrochée au camion ; au bout, elle tombe et le camion s'en va.
+    /// Le bonhomme sur son chemin est renversé.
+    private func movePlow(dt: CGFloat) {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard let plow else {
+            // Dock caché ou neige arrêtée : il attend que le Dock revienne au lieu de sauter son tour.
+            guard now >= nextPlowAt, snowplowEnabled, !isPaused, let dock else { return }
+            nextPlowAt = now + .random(in: 120...300)
+            if dock.pile.heights.reduce(0, +) > CGFloat(dock.pile.heights.count) * 4 { startPlow() }
+            return
+        }
+        guard let dock else {
+            removePlow()
+            return
+        }
+        let plowX = plowStartX + plowSpeed * CGFloat(CACurrentMediaTime() - plowStartedAt)
+        let blade = plowX + plow.bladeOffset
+        defer { bladeBefore = blade }
+        plow.puff(in: clumpContainer, at: CGPoint(x: plowX, y: dock.rect.minY + 1), now: now)
+
+        if !plowLeaving {
+            plowLoad += dock.pile.plow(fromX: bladeBefore, toX: blade)
+            plow.carry(plowLoad * Pile.binWidth)
+            if let snowman, snowmanGoneAt == nil, blade >= snowman.layer.position.x - snowman.footRadius {
+                snowman.topple()
+                burstShards(at: CGPoint(x: snowman.layer.position.x, y: dock.rect.minY - 30), count: 20, speed: 200)
+                snowmanGoneAt = now + 1.4
+            }
+            if blade >= dock.rect.maxX {
+                plowLeaving = true
+                plowLoad += dock.pile.plow(fromX: blade, toX: dock.rect.maxX + Pile.binWidth)
+                dump(plowLoad, at: CGPoint(x: dock.rect.maxX, y: dock.rect.minY))
+                plowLoad = 0
+                plow.carry(0)
+            }
+        } else if blade > dock.rect.maxX + 40 {
+            removePlow()
+        }
+    }
+
+    private func removePlow() {
+        plow?.layer.removeFromSuperlayer()
+        plow = nil
+        pilesChanged = true
+    }
+
+    /// La congère poussée au bout du Dock tombe en mottes.
+    private func dump(_ amount: CGFloat, at edge: CGPoint) {
+        var left = amount * Pile.binWidth
+        while left > 20, clumps.count < 80 {
+            let side = CGFloat.random(in: 8...16)
+            let clump = Clump(center: CGPoint(x: edge.x + side / 2, y: edge.y - side / 2 - .random(in: 0...20)),
+                              size: CGSize(width: side * 1.3, height: side), scale: screen?.backingScaleFactor ?? 2)
+            clump.velocity = CGVector(dx: .random(in: 40...120), dy: .random(in: -60...0))
+            clumpContainer.addSublayer(clump.layer)
+            clumps.append(clump)
+            left -= side * side
         }
     }
 
@@ -699,7 +980,9 @@ final class SnowView: NSView {
 
 
         // Chaque nouveau dessin des tas fait repeindre tout l'écran par macOS : au plus 3 fois par seconde.
-        guard pilesChanged, tickCount % 8 == 0 || fps == Self.idleFPS else { return }
+        let redraw = pilesChanged && (tickCount % (lastMouse != nil ? 2 : 8) == 0 || fps == Self.idleFPS)
+        if redraw || plow != nil { renderDock() }
+        guard redraw else { return }
         pilesChanged = false
         let bodyPath = CGMutablePath()
         let topPath = CGMutablePath()
@@ -708,7 +991,7 @@ final class SnowView: NSView {
         CATransaction.setDisableActions(true)
         for (index, surface) in surfaces.enumerated() {
             if let pile = piles[surface.id] {
-                addPile(pile, top: surface.frame.minY, hiddenBehind: index, body: bodyPath, highlight: topPath)
+                addPile(pile, top: surfaceTop(surface), hiddenBehind: index, body: bodyPath, highlight: topPath)
             }
             if let spikes = icicles[surface.id] {
                 layoutIcicles(spikes, bottom: surface.frame.maxY, hiddenBehind: index, frost: frostPath)
@@ -718,14 +1001,23 @@ final class SnowView: NSView {
             addPile(floor, top: bounds.height, hiddenBehind: surfaces.count, alsoHiddenBehindDock: true,
                     body: bodyPath, highlight: topPath)
         }
-        if let ledge = dock {
-            addPile(ledge.pile, top: ledge.rect.minY, hiddenBehind: 0, body: bodyPath, highlight: topPath)
-        }
         pileShadowLayer.path = bodyPath
         pileBodyLayer.path = bodyPath
         pileTopLayer.path = topPath
         CATransaction.commit()
         frostLayer.path = frostPath
+    }
+
+    private func renderDock() {
+        let body = CGMutablePath()
+        let top = CGMutablePath()
+        if let ledge = dock { addPile(ledge.pile, top: ledge.rect.minY, hiddenBehind: 0, body: body, highlight: top) }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        dockShadowLayer.path = body
+        dockBodyLayer.path = body
+        dockTopLayer.path = top
+        CATransaction.commit()
     }
 
     /// Petite étoile à six branches : trois traits croisés.

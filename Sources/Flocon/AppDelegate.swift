@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var accumulationBoost: CGFloat = 1
     private var snowmanEnabled = true
     private var snowballsEnabled = true
+    private var snowplowEnabled = true
 
     private let intensities: [(title: String, flakesPerSecond: Double)] = [
         ("Légère", 50), ("Normale", 150), ("Tempête", 450),
@@ -67,7 +68,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Une fenêtre transparente au-dessus de tout, que les clics traversent.
     private func createOverlay(on screen: NSScreen, primaryHeight: CGFloat) {
-        let window = NSWindow(contentRect: screen.frame, styleMask: .borderless, backing: .buffered, defer: false)
+        // Un panneau qui n'active pas Flocon : un clic sur le bonhomme ne retire pas le focus à l'app en cours.
+        let window = NSPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
+                             backing: .buffered, defer: false)
+        window.hidesOnDeactivate = false
+        window.becomesKeyOnlyIfNeeded = true
         window.isOpaque = false
         window.backgroundColor = .clear
         window.hasShadow = false
@@ -84,6 +89,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         view.accumulationBoost = accumulationBoost
         view.snowmanEnabled = snowmanEnabled
         view.snowballsEnabled = snowballsEnabled
+        view.snowplowEnabled = snowplowEnabled
         view.isPaused = isPaused
         // AppKit compte depuis le bas de l'écran principal, CoreGraphics depuis son haut.
         let screenOrigin = CGPoint(x: screen.frame.minX, y: primaryHeight - screen.frame.maxY)
@@ -123,6 +129,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let settings = NSMenu()
         settings.addItem(entry("Neige qui tient vite", #selector(toggleFastAccumulation(_:)), on: accumulationBoost > 1))
+        settings.addItem(entry("Chasse-neige sur le Dock", #selector(toggleSnowplow(_:)), on: snowplowEnabled))
+        settings.addItem(entry("Faire passer le chasse-neige", #selector(sendPlowNow)))
         settings.addItem(entry("Ouvrir au démarrage du Mac", #selector(toggleLaunchAtLogin(_:)),
                                on: SMAppService.mainApp.status == .enabled))
         menu.addItem(submenu("Réglages", settings))
@@ -159,6 +167,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         accumulationBoost = accumulationBoost == 1 ? 6 : 1
         snowViews.forEach { $0.accumulationBoost = accumulationBoost }
         sender.state = accumulationBoost == 1 ? .off : .on
+    }
+
+    @objc private func toggleSnowplow(_ sender: NSMenuItem) {
+        snowplowEnabled.toggle()
+        snowViews.forEach { $0.snowplowEnabled = snowplowEnabled }
+        sender.state = snowplowEnabled ? .on : .off
+    }
+
+    @objc private func sendPlowNow() {
+        snowViews.forEach { $0.sendPlowNow() }
     }
 
     @objc private func toggleSnowballs(_ sender: NSMenuItem) {

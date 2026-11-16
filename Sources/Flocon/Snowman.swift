@@ -619,6 +619,113 @@ final class Snowman {
         }
     }
 
+    // MARK: - Coups
+
+    /// Boules encore debout : bas, milieu, tête.
+    private var standing = [true, true, true]
+    /// Descente des parties posées sur la boule du bas, une fois celle-ci cassée.
+    private var drop: CGFloat = 0
+    private(set) var isHit = false
+    var isWrecked: Bool { !standing.contains(true) }
+    var footRadius: CGFloat { r1 }
+
+    private func center(of index: Int) -> CGFloat {
+        [c1, c2 + drop, c3 + drop][index]
+    }
+
+    /// Boule sous le pointeur, la tête d'abord puisqu'elle est devant.
+    func ball(at point: CGPoint) -> Int? {
+        let p = CGPoint(x: point.x - layer.position.x, y: point.y - layer.position.y)
+        return [2, 1, 0].first { i in
+            standing[i] && hypot(p.x, p.y - center(of: i)) <= [r1, r2, r3][i]
+        }
+    }
+
+    /// La boule touchée éclate et renvoie son centre dans le repère de l'écran. Celle du bas fait descendre
+    /// le reste d'un étage ; celle du milieu fait rouler la tête dans la neige.
+    func hit(_ index: Int) -> CGPoint {
+        isHit = true
+        body.removeAllAnimations()
+        [leftArm, rightArm, eyes, scarfTail].forEach { $0.removeAllAnimations() }
+        let burstAt = CGPoint(x: layer.position.x, y: layer.position.y + center(of: index))
+        standing[index] = false
+
+        switch index {
+        case 2:
+            burst(head)
+        case 1:
+            burst(balls[1])
+            buttons.forEach { $0.isHidden = true }
+            if standing[2] { tumbleHead() }
+            for (arm, side) in [(leftArm, -1.0), (rightArm, 1.0)] {
+                basic(arm, "position", from: nil, to: NSValue(point: CGPoint(x: side * r1 * 1.1, y: -drop - 3 * k)),
+                      at: 0, duration: 0.5, timing: .easeIn)
+                basic(arm, "transform.rotation.z", from: nil, to: side * 1.3, at: 0, duration: 0.5, timing: .easeIn)
+            }
+            basic(scarf, "position.y", from: nil, to: -drop - 4 * k, at: 0, duration: 0.5, timing: .easeIn)
+        default:
+            burst(balls[0])
+            body.sublayers?.first?.isHidden = true
+            let fall = -(c2 + r2)
+            let settle = CASpringAnimation(keyPath: "sublayerTransform.translation.y")
+            settle.fromValue = drop
+            settle.toValue = drop + fall
+            settle.damping = 10
+            settle.stiffness = 260
+            settle.duration = settle.settlingDuration
+            drop += fall
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            body.sublayerTransform = CATransform3DMakeTranslation(0, drop, 0)
+            CATransaction.commit()
+            body.add(settle, forKey: "drop-a-level")
+        }
+        if isWrecked { basic(layer, "opacity", from: nil, to: 0, at: 0.6, duration: 0.8) }
+        return burstAt
+    }
+
+    private func burst(_ part: CALayer) {
+        let pop = CAKeyframeAnimation(keyPath: "transform.scale")
+        pop.values = [1, 1.25, 0.2]
+        pop.keyTimes = [0, 0.4, 1]
+        let fade = CABasicAnimation(keyPath: "opacity")
+        fade.fromValue = 1
+        fade.toValue = 0
+        let group = CAAnimationGroup()
+        group.animations = [pop, fade]
+        hold(group, at: 0, duration: 0.18)
+        part.add(group, forKey: "burst")
+    }
+
+    /// Sans boule du milieu, la tête tombe sur le côté et roule dans la neige.
+    private func tumbleHead() {
+        standing[2] = false
+        let side: CGFloat = Bool.random() ? 1 : -1
+        let ground = -drop - r3
+        travel(head, through: [CGPoint(x: 0, y: c3), CGPoint(x: side * r2, y: c3 - r3),
+                               CGPoint(x: side * (r1 + r3 * 1.4), y: ground)], at: 0, duration: 0.7)
+        basic(head, "transform.rotation.z", from: 0, to: side * 2.6, at: 0, duration: 0.9, timing: .easeOut)
+        basic(head, "opacity", from: nil, to: 0, at: 2.2, duration: 1)
+    }
+
+    /// Le chasse-neige le percute : il bascule de tout son long et disparaît dans la congère.
+    func topple() {
+        isHit = true
+        standing = [false, false, false]
+        body.removeAllAnimations()
+        let anchor = CGPoint(x: footRadius, y: 0)
+        let tip = CABasicAnimation(keyPath: "transform")
+        tip.fromValue = CATransform3DIdentity
+        var turn = CATransform3DMakeTranslation(anchor.x, anchor.y, 0)
+        turn = CATransform3DRotate(turn, .pi / 2, 0, 0, 1)
+        turn = CATransform3DTranslate(turn, -anchor.x, -anchor.y, 0)
+        tip.toValue = turn
+        tip.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        hold(tip, at: 0, duration: 0.55)
+        body.add(tip, forKey: "topple")
+        basic(layer, "opacity", from: nil, to: 0, at: 0.5, duration: 0.7)
+    }
+
     // MARK: - Fonte
 
     static let meltDuration: CFTimeInterval = 18

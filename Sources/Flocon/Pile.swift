@@ -85,6 +85,45 @@ final class Pile {
         (0, 0.36), (-1, 0.2), (1, 0.2), (-2, 0.08), (2, 0.08), (-3, 0.04), (3, 0.04),
     ]
 
+    /// Retire une part de la neige des colonnes autour de x et renvoie la quantité retirée.
+    func scoop(atX x: CGFloat, radius: Int, fraction: CGFloat = 1) -> CGFloat {
+        let center = index(atX: x)
+        var removed: CGFloat = 0
+        for i in max(0, center - radius)...min(heights.count - 1, center + radius) {
+            let taken = heights[i] * fraction
+            heights[i] -= taken
+            removed += taken
+        }
+        return removed
+    }
+
+    /// Neige poussée : elle s'entasse juste devant, plus haut qu'un tas qui tombe du ciel.
+    func bank(atX x: CGFloat, amount: CGFloat, direction: Int) {
+        var load = amount
+        var i = index(atX: x)
+        var step = 0
+        while load > 0.01, heights.indices.contains(i), step < 8 {
+            let room = max(0, maxHeight * 1.7 * (1 - CGFloat(step) * 0.1) - heights[i])
+            let put = min(room, load)
+            heights[i] += put
+            load -= put
+            i += direction
+            step += 1
+        }
+    }
+
+    /// La lame racle tout jusqu'à x et renvoie la neige raclée, que le chasse-neige pousse devant lui.
+    func plow(fromX start: CGFloat, toX x: CGFloat) -> CGFloat {
+        guard x >= originX else { return 0 }
+        let blade = min(Int((x - originX) / Pile.binWidth), heights.count - 1)
+        var load: CGFloat = 0
+        for i in max(0, index(atX: start) - 8)...blade {
+            load += heights[i]
+            heights[i] = 0
+        }
+        return load
+    }
+
     func add(atX x: CGFloat, amount: CGFloat) {
         var i = index(atX: x)
         // Un flocon roule vers le voisin plus bas, comme du sable.
